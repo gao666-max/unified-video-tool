@@ -1,0 +1,7 @@
+.env
+server.log
+__pycache__/
+*.pyc
+outputs/
+static/decks/
+.venv/

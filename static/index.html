@@ -1,0 +1,130 @@
+﻿<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>视频笔记 · 图文生成器</title>
+<style>
+:root{--ink:#1B2333;--soft:#5A6478;--faint:#8A93A6;--line:#E9EAEE;--hush:#F7F8FA;--canvas:#F2F4F8;--card:#FCFCFD;--accent:#2563EB}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--canvas);color:var(--ink);min-height:100vh}
+body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(circle at 1px 1px,rgba(27,35,51,.04) 1px,transparent 1px);background-size:26px 26px}
+.wrap{max-width:780px;margin:0 auto;padding:36px 20px 60px;position:relative;z-index:1}
+h1{font-size:20px;text-align:center;margin-bottom:18px}
+.tabs{display:flex;gap:6px;justify-content:center;margin-bottom:20px}
+.tabs span{padding:9px 22px;border-radius:999px;font-size:13px;font-weight:600;background:var(--card);border:1px solid var(--line);color:var(--soft);cursor:pointer}
+.tabs span.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.pane{display:none}.pane.show{display:block}
+.tags{display:flex;gap:6px;justify-content:center;margin-bottom:18px;flex-wrap:wrap}
+.tags span{padding:5px 13px;border-radius:999px;font-size:11px;font-weight:600;background:var(--card);border:1px solid var(--line);color:var(--soft);cursor:pointer}
+.tags span.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.row{display:flex;gap:8px}
+.row input{flex:1;padding:11px 14px;border-radius:10px;border:1px solid var(--line);background:var(--card);font-size:13px;font-family:inherit;outline:none}
+.row input:focus{border-color:rgba(27,35,51,.22);box-shadow:0 0 0 3px rgba(27,35,51,.05)}
+.row button{padding:0 22px;border-radius:10px;border:none;background:var(--ink);color:#fff;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap}
+.row button:disabled{opacity:.4;cursor:not-allowed}
+.ppt{display:none;margin-top:14px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.ppt.show{display:block}
+.ppt-t{font-size:11.5px;color:var(--soft);margin-bottom:10px}
+.ppt-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.th{display:flex;gap:6px;flex:1;flex-wrap:wrap}
+.th span{padding:5px 13px;border-radius:999px;font-size:11px;font-weight:600;background:var(--hush);border:1px solid var(--line);color:var(--soft);cursor:pointer}
+.th span.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.ppt-row button{padding:8px 18px;border-radius:9px;border:none;background:var(--ink);color:#fff;font-size:12px;font-weight:600;font-family:inherit;cursor:pointer}
+.ppt-row button:disabled{opacity:.4;cursor:not-allowed}
+.loading{display:none;text-align:center;padding:28px;margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:10px}
+.loading.show{display:block}
+.spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--ink);border-radius:50%;animation:s .7s linear infinite;margin:0 auto 10px}
+@keyframes s{to{transform:rotate(360deg)}}
+.err{display:none;margin-top:12px;padding:10px 14px;border-radius:8px;background:rgba(245,162,68,.1);color:#c7851a;font-size:12px}
+.err.show{display:block}
+.result{display:none;margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+.result.show{display:block}
+.rh{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.rh b{font-size:14px}.rh em{font-size:11px;padding:3px 9px;border-radius:999px;background:var(--hush);color:var(--soft);font-style:normal}
+.rt{font-size:12.5px;line-height:1.7;color:var(--soft);white-space:pre-wrap;max-height:360px;overflow-y:auto;background:var(--hush);border-radius:8px;padding:14px}
+.ra{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.ra button{padding:7px 14px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--soft);font-size:11.5px;font-weight:600;font-family:inherit;cursor:pointer}
+.ra button:hover{background:var(--hush);color:var(--ink)}
+.nc-t{font-size:12px;color:var(--soft);margin-bottom:12px;line-height:1.6}
+textarea{width:100%;min-height:260px;padding:14px;border-radius:12px;border:1px solid var(--line);background:var(--card);font-size:13px;font-family:inherit;line-height:1.7;resize:vertical;outline:none;margin-top:10px}
+textarea:focus{border-color:rgba(27,35,51,.22);box-shadow:0 0 0 3px rgba(27,35,51,.05)}
+.hint2{font-size:11px;color:var(--faint);margin-top:10px;line-height:1.6}
+.ng{display:none;margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+.ng.show{display:block}
+.ng-t{font-size:11.5px;color:var(--soft);margin-bottom:12px}
+.ng-grid{display:flex;gap:14px;flex-wrap:wrap}
+.ngit{width:180px;text-align:center}
+.ngit img{width:100%;border-radius:10px;border:1px solid var(--line);display:block;margin-bottom:6px}
+.ngit a{font-size:11px;color:var(--soft);text-decoration:none;font-weight:600}
+.ngit a:hover{color:var(--ink)}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(27,35,51,.12);border-radius:4px}
+</style></head><body><div class="wrap">
+<h1>📹 视频 → 笔记 → 图文</h1>
+<div class="tabs"><span class="on" data-t="extract">📝 提取笔记</span><span data-t="notecard">🎨 笔记生图</span></div>
+
+<div class="pane show" id="pane-extract">
+<div class="tags"><span data-p="douyin">抖音</span><span data-p="xiaohongshu">小红书</span><span data-p="bilibili">B站</span><span data-p="youtube">YouTube</span></div>
+<div class="row"><input id="u" placeholder="粘贴视频链接..." autocomplete="off"><button id="b" onclick="go()">提取</button></div>
+<div class="ppt" id="ppt"><div class="ppt-t">长视频 → 图文PPT：上方关键帧 + 下方原话，可切 AI 改版</div>
+<div class="ppt-row"><div class="th" id="th"><span data-th="tcq-dark" class="on">深色高级</span><span data-th="light-minimal">浅色简洁</span></div>
+<button id="pb" onclick="mk()" disabled>生成PPT</button></div></div>
+<div class="loading" id="ld"><div class="spin"></div><div id="ldt" style="font-size:12px;color:var(--soft)">正在提取...</div></div>
+<div class="err" id="er"></div>
+<div class="result" id="rs"><div class="rh"><b id="rt">-</b><em id="rp">-</em></div>
+<div style="font-size:11px;color:var(--faint);margin-bottom:10px">字数：<b id="rw" style="color:var(--ink)">0</b></div>
+<div class="rt" id="rx"></div><div class="ra">
+<button onclick="cp()">复制</button><button onclick="dl()">下载TXT</button><button onclick="og()">AI整理</button><button onclick="od()">存Obsidian</button><button onclick="toArt()">🎨 去做图文</button></div></div>
+</div>
+
+<div class="pane" id="pane-notecard">
+<div class="nc-t">把笔记文本变成小红书图文卡片：封面插画由 AI 生图（硅基流动 / 豆包），文字本地排版保证清晰。在「提取笔记」里 AI整理 后点「🎨 去做图文」会自动带过来，也可以直接粘贴。</div>
+<div class="row"><input id="nt" placeholder="卡片标题（可选，默认用当前笔记标题）" autocomplete="off"></div>
+<textarea id="nx" placeholder="在这里粘贴或编辑笔记内容，支持 Markdown（## 分节、- 列表）..."></textarea>
+<div class="ppt-row" style="margin-top:12px">
+<div class="th" id="nth"><span data-st="minimal" class="on">暖白极简</span><span data-st="cartoon">活力卡通</span><span data-st="serif">书卷雅致</span></div>
+<button id="nb" onclick="gen()">生成图文卡片</button></div>
+<div class="hint2">没配 AI 生图 key 时封面用纯 CSS 占位，不耽误出图；配好 IMAGE_API_KEY 后自动换成 AI 插画封面。</div>
+<div class="ng" id="ng"><div class="ng-t" id="ngt">预览</div><div class="ng-grid" id="ngg"></div></div>
+</div>
+</div>
+<script>
+var R=null,pTh='tcq-dark',nSt='minimal';
+var u=document.getElementById('u'),b=document.getElementById('b');
+document.querySelectorAll('.tabs span').forEach(function(t){t.addEventListener('click',function(){
+document.querySelectorAll('.tabs span').forEach(function(x){x.classList.toggle('on',x===t)});
+document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('show',p.id==='pane-'+t.dataset.t)});});});
+document.querySelectorAll('#th span').forEach(function(t){t.addEventListener('click',function(){pTh=t.dataset.th;document.querySelectorAll('#th span').forEach(function(x){x.classList.toggle('on',x===t)})})});
+document.querySelectorAll('#nth span').forEach(function(t){t.addEventListener('click',function(){nSt=t.dataset.st;document.querySelectorAll('#nth span').forEach(function(x){x.classList.toggle('on',x===t)})})});
+u.addEventListener('input',function(){var v=this.value.trim();document.querySelectorAll('.tags span').forEach(function(t){t.classList.remove('on')});if(!v)return;var d='';if(v.includes('douyin.com')||v.includes('iesdouyin'))d='douyin';else if(v.includes('xiaohongshu.com')||v.includes('xhslink'))d='xiaohongshu';else if(v.includes('bilibili.com')||v.includes('b23.tv'))d='bilibili';else if(v.includes('youtube.com')||v.includes('youtu.be'))d='youtube';document.querySelectorAll('.tags span').forEach(function(t){t.classList.toggle('on',t.dataset.p===d)});});
+u.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go();}});
+function addH(h){try{var a=JSON.parse(localStorage.getItem('extract_history')||'[]');a.unshift(h);localStorage.setItem('extract_history',JSON.stringify(a.slice(0,20)))}catch(e){}}
+function go(){var v=u.value.trim();var mm=v.match(/https?:\/\/[^\s<>"']+/);if(mm)v=mm[0].replace(/[.,;:!?)\]}>\u3002\uff0c\u3011\u3010\u300b\u300a]+$/,'');if(!v){se('\u8bf7\u5148\u7c98\u8d34\u94fe\u63a5');return}el('rs','');el('er','');el('ld','show');b.disabled=true;document.getElementById('pb').disabled=true;document.getElementById('ldt').textContent='正在提取...视频较长可能需要等待几分钟';
+fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:v})})
+.then(function(r){return r.json()}).then(function(d){el('ld','');b.disabled=false;document.getElementById('pb').disabled=false;
+if(!d.ok){se(d.error||'失败');return}R=d;
+document.getElementById('rt').textContent=d.title||'未命名';
+document.getElementById('rp').textContent=d.platform||'';
+document.getElementById('rw').textContent=d.words||0;
+document.getElementById('rx').textContent=d.text||'';
+el('rs','show');addH({title:d.title,platform:d.platform,url:v,words:d.words,time:new Date().toISOString()})
+}).catch(function(e){el('ld','');b.disabled=false;se('网络错误:'+e.message+'。确认终端窗口没有关闭，代理已开启。')});}
+function se(m){var e=document.getElementById('er');e.textContent=m;e.classList.add('show')}
+function el(id,v){var e=document.getElementById(id);if(v==='show')e.classList.add('show');else e.classList.remove('show')}
+function cp(){if(!R)return;navigator.clipboard.writeText(R.text);se('已复制');setTimeout(function(){el('er','')},1500)}
+function dl(){if(!R)return;var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([R.text],{type:'text/plain;charset=utf-8'}));a.download=(R.title||'transcript').slice(0,40)+'.txt';a.click()}
+function od(){if(!R)return;var p={title:R.title,platform:R.platform||'',text:R.organized||R.text};fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).then(function(r){return r.json()}).then(function(d){if(d.ok){se('已存入: '+d.path)}else{se('保存失败: '+d.error)}setTimeout(function(){el('er','')},6000)}).catch(function(e){se('网络错误:'+e.message)})}
+function og(){if(!R)return;el('ld','show');document.getElementById('ldt').textContent='AI 整理中（DeepSeek）...';fetch('/api/organize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:R.title,text:R.text})}).then(function(r){return r.json()}).then(function(d){el('ld','');if(!d.ok){se(d.error||'整理失败');return}R.organized=d.text;document.getElementById('rx').textContent=d.text;document.getElementById('rw').textContent=(d.text||'').replace(/\s/g,'').length;se('已整理成笔记，可「存Obsidian」或「去做图文」');setTimeout(function(){el('er','')},4000)}).catch(function(e){el('ld','');se('网络错误:'+e.message)})}
+function mk(){var v=u.value.trim();var mm=v.match(/https?:\/\/[^\s<>"']+/);if(mm)v=mm[0].replace(/[.,;:!?)\]}>\u3002\uff0c\u3011\u3010\u300b\u300a]+$/,'');if(!v){se('\u8bf7\u5148\u7c98\u8d34\u94fe\u63a5');return}el('rs','');el('er','');el('ld','show');b.disabled=true;document.getElementById('pb').disabled=true;document.getElementById('ldt').textContent='正在生成PPT：下载→转写→抽关键帧→AI润色，可能需要几分钟';
+fetch('/api/deck',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:v,theme:pTh})})
+.then(function(r){return r.json()}).then(function(d){el('ld','');b.disabled=false;document.getElementById('pb').disabled=false;
+if(!d.ok){se(d.error||'生成失败');return}window.open(d.url,'_blank');se('PPT 已生成（'+d.label+'，'+d.slides+'页）');setTimeout(function(){el('er','')},8000)}).catch(function(e){el('ld','');b.disabled=false;document.getElementById('pb').disabled=false;se('网络错误:'+e.message)})}
+function toArt(){if(!R)return;document.getElementById('nt').value=R.title||'';document.getElementById('nx').value=R.organized||R.text||'';document.querySelectorAll('.tabs span').forEach(function(t){t.classList.toggle('on',t.dataset.t==='notecard')});document.querySelectorAll('.pane').forEach(function(p){p.classList.toggle('show',p.id==='pane-notecard')});se('笔记已带到「笔记生图」，选样式点生成');setTimeout(function(){el('er','')},2500)}
+function gen(){var t=document.getElementById('nt').value.trim()||(R&&R.title)||'';var x=document.getElementById('nx').value.trim();if(!x){se('请先粘贴或编辑笔记内容');return}var nb=document.getElementById('nb');nb.disabled=true;document.getElementById('ldt').textContent='正在生成图文卡片...';el('ld','show');
+fetch('/api/notecard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t,text:x,style:nSt})})
+.then(function(r){return r.json()}).then(function(d){el('ld','');nb.disabled=false;
+if(!d.ok){se(d.error||'生成失败');return}
+var g=document.getElementById('ngg');g.innerHTML='';
+d.images.forEach(function(im,i){var w=document.createElement('div');w.className='ngit';
+var img=document.createElement('img');img.src=im.url;img.loading='lazy';
+var a=document.createElement('a');a.href=im.url;a.target='_blank';a.download='';a.textContent='第'+(i+1)+'张 \u2193';
+w.appendChild(img);w.appendChild(a);g.appendChild(w)});
+document.getElementById('ngt').textContent='预览（'+d.style+' · '+(d.ai_cover?'AI 插画封面':'纯 CSS 封面')+' · 点图片右键保存）';
+document.getElementById('ng').classList.add('show');se('已生成 '+d.count+' 张图文卡片');setTimeout(function(){el('er','')},5000)})
+.catch(function(e){el('ld','');nb.disabled=false;se('网络错误:'+e.message)})}
+</script></body></html>
