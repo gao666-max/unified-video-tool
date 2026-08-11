@@ -59,7 +59,7 @@ IMAGE_API_KEY=你的key
 IMAGE_BASE_URL=https://api.siliconflow.cn/v1
 IMAGE_MODEL=black-forest-labs/FLUX.1-schnell
 ```
-任何 OpenAI 兼容的 `images/generations` 接口都可以：
+任意 OpenAI 兼容的 `images/generations` 接口，或阿里云百炼的多模态生图接口都可以：
 - 硅基流动：`IMAGE_BASE_URL=https://api.siliconflow.cn/v1` + `IMAGE_MODEL=black-forest-labs/FLUX.1-schnell`
 - 豆包火山 Ark：`IMAGE_BASE_URL=https://ark.cn-beijing.volces.com/api/v3` + `IMAGE_MODEL=doubao-seedream-3-0-t2i`
 ## License

@@ -105,13 +105,29 @@ def _ai_cover(summary, title):
     base = (env.get('IMAGE_BASE_URL') or os.environ.get('IMAGE_BASE_URL')
             or 'https://api.siliconflow.cn/v1').rstrip('/')
     model = env.get('IMAGE_MODEL') or os.environ.get('IMAGE_MODEL') or 'black-forest-labs/FLUX.1-schnell'
+    mode = (env.get('IMAGE_MODE') or os.environ.get('IMAGE_MODE') or 'openai').strip().lower()
     topic = (summary or title or '学习笔记')[:60]
     prompt = ('扁平插画，低饱和莫兰迪色系，构图简洁，画面通俗易懂，不要出现任何文字，主题：' + topic)
+    headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key}
     try:
+        if mode == 'dashscope':
+            payload = json.dumps({
+                'model': model,
+                'input': {'messages': [{'role': 'user', 'content': [{'text': prompt}]}]},
+                'parameters': {'size': '1024*1024', 'n': 1},
+            }).encode('utf-8')
+            req = urllib.request.Request(base + '/api/v1/services/aigc/multimodal-generation/generation',
+                                         data=payload, headers=headers)
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+            parts = (data.get('output', {}).get('choices') or [{}])[0].get('message', {}).get('content') or []
+            img_url = next((it.get('image') for it in parts if isinstance(it, dict) and it.get('image')), None)
+            if img_url:
+                with urllib.request.urlopen(img_url, timeout=120) as r:
+                    return 'data:image/png;base64,' + base64.b64encode(r.read()).decode()
+            return None
         payload = json.dumps({'model': model, 'prompt': prompt, 'n': 1, 'size': '1024x1024'}).encode('utf-8')
-        req = urllib.request.Request(base + '/images/generations', data=payload,
-                                     headers={'Content-Type': 'application/json',
-                                              'Authorization': 'Bearer ' + key})
+        req = urllib.request.Request(base + '/images/generations', data=payload, headers=headers)
         with urllib.request.urlopen(req, timeout=180) as resp:
             data = json.loads(resp.read().decode('utf-8'))
         items = data.get('data') or []
