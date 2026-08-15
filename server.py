@@ -102,7 +102,7 @@ def process_douyin(url, wd):
         subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',session,'open',video_url,'--window','background'],
             capture_output=True, text=True, timeout=40, env=env, encoding='utf-8', errors='replace')
         time.sleep(5)
-        js = "JSON.stringify({t:document.title.replace(' - 抖音','').trim(), d:(document.querySelector('meta[name=description]')||{}).content||''})"
+        js = "JSON.stringify({t:document.title.replace(' - 抖音','').trim()||(document.querySelector('h1')||{}).textContent||'', d:(document.querySelector('meta[name=description]')||{}).content||(document.querySelector('h1')||{}).textContent||''})"
         r = subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',session,'eval',js],
             capture_output=True, text=True, timeout=30, env=env, encoding='utf-8', errors='replace')
         # eval 输出带 node 警告前缀，取最后一行非空 JSON
@@ -140,9 +140,10 @@ def process_douyin(url, wd):
             net_proc = subprocess.Popen(
                 [opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'network','--follow','--all'],
                 stdout=nf, stderr=subprocess.DEVNULL, text=True, env=env, encoding='utf-8', errors='replace')
-            # 刷新页面触发视频地址请求
+            # 点击播放触发视频地址请求（不用 location.reload，会搞挂 --follow 监听）
             time.sleep(1)
-            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'eval','location.reload()'],
+            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'eval',
+                '(function(){var v=document.querySelector("video");if(v){v.muted=true;v.play();}return !!v;})()'],
                 capture_output=True, text=True, timeout=20, env=env, encoding='utf-8', errors='replace')
             time.sleep(8)
             net_proc.terminate()
@@ -150,16 +151,42 @@ def process_douyin(url, wd):
                 net_proc.wait(timeout=5)
             except Exception:
                 net_proc.kill()
-        # 读文件找 douyinvod mp4 地址
+        # 读文件找 douyinvod 地址（音视频分离，优先 audio 流，其次视频流）
         net_output = net_file.read_text(encoding='utf-8', errors='ignore') if net_file.exists() else ''
-        m = re.search(r'https?://[^"\'\s]*douyinvod\.com[^"\'\s]*video_mp4[^"\'\s]*', net_output)
-        if m:
-            vurl = m.group(0).replace('\\u002F','/').replace('\\/','/')
-            vf = wd / 'video.mp4'
-            # 直连下载（抖音 CDN 国内站，不走代理）
+        audio_url = None
+        video_url_found = None
+        # 找 audio 流
+        m_audio = re.search(r'https?://[^"\'\s]*douyinvod\.com[^"\'\s]*media-audio[^"\'\s]*', net_output)
+        if m_audio:
+            audio_url = m_audio.group(0).replace('\\u002F','/').replace('\\/','/')
+        # 找 video 流（兜底）
+        m_video = re.search(r'https?://[^"\'\s]*douyinvod\.com[^"\'\s]*(?:video_mp4|media-video)[^"\'\s]*', net_output)
+        if m_video:
+            video_url_found = m_video.group(0).replace('\\u002F','/').replace('\\/','/')
+
+        # 优先下载 audio 流转写（音视频分离的视频，纯视频流无音轨）
+        if audio_url:
+            af = wd / 'audio.mp4'
             s2 = requests.Session(); s2.trust_env = False
             s2.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://www.douyin.com/'})
-            with s2.get(vurl, stream=True, timeout=120) as resp:
+            try:
+                with s2.get(audio_url, stream=True, timeout=120) as resp:
+                    resp.raise_for_status()
+                    with open(af,'wb') as f:
+                        shutil.copyfileobj(resp.raw, f)
+                if af.exists() and af.stat().st_size > 10000:
+                    wtxt = transcribe_audio_file(af, wd)
+                    if wtxt.strip():
+                        transcript = wtxt
+            except Exception as e:
+                log_line('douyin-audio-dl-err ' + str(e)[:100])
+
+        # audio 流转写失败/无 audio 流时，回退到视频流
+        if not transcript.strip() and video_url_found:
+            vf = wd / 'video.mp4'
+            s2 = requests.Session(); s2.trust_env = False
+            s2.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://www.douyin.com/'})
+            with s2.get(video_url_found, stream=True, timeout=120) as resp:
                 resp.raise_for_status()
                 with open(vf,'wb') as f:
                     shutil.copyfileobj(resp.raw, f)
@@ -195,6 +222,18 @@ def transcribe_video(vf, wd):
         model = WhisperModel('small', device='cpu', compute_type='int8', cpu_threads=8,
             download_root=WHISPER_DIR, local_files_only=True)
         segs, _ = model.transcribe(af, language='zh', vad_filter=True, beam_size=5)
+        return zhconv.convert('\n'.join(s.text.strip() for s in segs if s.text.strip()), 'zh-cn')
+    except Exception:
+        return ''
+
+def transcribe_audio_file(af, wd):
+    """直接转写音频文件（抖音 audio 流已是纯音频，无需 ffmpeg 抽）。失败返回空串。"""
+    try:
+        from faster_whisper import WhisperModel
+        import zhconv
+        model = WhisperModel('small', device='cpu', compute_type='int8', cpu_threads=8,
+            download_root=WHISPER_DIR, local_files_only=True)
+        segs, _ = model.transcribe(str(af), language='zh', vad_filter=True, beam_size=5)
         return zhconv.convert('\n'.join(s.text.strip() for s in segs if s.text.strip()), 'zh-cn')
     except Exception:
         return ''
