@@ -5,3 +5,7 @@ __pycache__/
 outputs/
 static/decks/
 .venv/
+
+# 快照和测试产物
+*.bak.*
+static/notecards/
