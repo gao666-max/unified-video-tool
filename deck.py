@@ -177,7 +177,9 @@ def ai_polish_quotes(title, quotes):
                                      data=json.dumps(payload).encode('utf-8'),
                                      headers={'Content-Type': 'application/json',
                                               'Authorization': 'Bearer ' + key})
-        with urllib.request.urlopen(req, timeout=180) as resp:
+        # DeepSeek 国内站直连，禁用系统代理
+        no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with no_proxy.open(req, timeout=180) as resp:
             data = json.loads(resp.read().decode('utf-8'))
         content = (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
         m = re.search(r'\[.*\]', content or '', re.S)

@@ -4,6 +4,11 @@
 import http.server, json, os, re, shutil, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
+# 清掉系统代理环境变量（Clash 没开时 127.0.0.1:7890 会劫持所有国内站请求）
+# B站/YouTube 走下方 net_env() 显式加 PROXY，抖音/DeepSeek/图片 API 国内站直连
+for _k in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy'):
+    os.environ.pop(_k, None)
+
 PROXY = 'http://127.0.0.1:7897'
 FFMPEG = r'D:\ffmpeg\bin\ffmpeg.exe'
 FFMPEG_DIR = r'D:\ffmpeg\bin'
@@ -66,23 +71,118 @@ def log_line(msg):
         pass
 
 def process_douyin(url, wd):
-    from script.douyin_resolver import resolve_douyin_share
-    from script.pipeline import process_douyin_share
-    from script.config import Settings
-    from script.paths import OUTPUT_DIR
+    """抖音解析：改用 OpenCLI 浏览器（登录态）拿标题/文案，再用 network 捕获视频 CDN 地址下载。
+    旧的 SSR 分享页解析已失效（抖音 2026.8 反爬升级，_ROUTER_DATA 不再内嵌数据）。"""
+    import requests
+    opencli_bin = r'C:\Users\TX\AppData\Roaming\npm\opencli.cmd'
+    env = os.environ.copy()
+    for k in ('HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy'):
+        env.pop(k, None)  # 抖音国内站直连，不走代理
+
+    # 1. 从分享链接解析出视频页 URL（短链重定向）
+    video_url = url
     try:
-        od = process_douyin_share(url, settings=Settings(output_dir=OUTPUT_DIR, whisper_model='small'))
-        meta = json.loads((od/'meta.json').read_text(encoding='utf-8')) if (od/'meta.json').exists() else {}
-        txt = ''
-        tp = od / 'transcript.txt'
-        if tp.exists():
-            t = tp.read_text(encoding='utf-8'); m = '--- 文案 ---'
-            txt = t.split(m,1)[1].strip() if m in t else t.strip()
-        return {'ok': True, 'title': meta.get('title',''), 'platform': 'douyin',
-                'text': txt, 'words': len(txt.replace('\n','').replace(' ','')),
-                'dir': str(od)}
+        from script.douyin_resolver import expand_share_url, normalize_to_share_page
+        import requests
+        share = expand_share_url(url)
+        s = requests.Session(); s.trust_env = False
+        s.headers.update({'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'})
+        r = s.get(share, allow_redirects=True, timeout=20)
+        final = str(r.url)
+        m = re.search(r'/video/(\d+)', final)
+        if m:
+            video_url = f'https://www.douyin.com/video/{m.group(1)}'
     except Exception as e:
-        return {'ok': False, 'error': str(e)}
+        log_line('douyin-redirect-err ' + str(e)[:100])
+
+    title = desc = author = ''
+    # 2. OpenCLI 浏览器打开视频页，eval 拿标题/文案
+    session = 'dy_' + str(int(time.time()))
+    try:
+        subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',session,'open',video_url,'--window','background'],
+            capture_output=True, text=True, timeout=40, env=env, encoding='utf-8', errors='replace')
+        time.sleep(5)
+        js = "JSON.stringify({t:document.title.replace(' - 抖音','').trim(), d:(document.querySelector('meta[name=description]')||{}).content||''})"
+        r = subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',session,'eval',js],
+            capture_output=True, text=True, timeout=30, env=env, encoding='utf-8', errors='replace')
+        # eval 输出带 node 警告前缀，取最后一行非空 JSON
+        lines = [l for l in r.stdout.splitlines() if l.strip().startswith('{')]
+        if lines:
+            try:
+                data = json.loads(lines[-1])
+                title = (data.get('t') or '').strip()
+                desc = (data.get('d') or '').strip()
+            except Exception:
+                pass
+    except Exception as e:
+        log_line('douyin-browser-err ' + str(e)[:100])
+    finally:
+        try:
+            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',session,'close'],
+                capture_output=True, text=True, timeout=15, env=env)
+        except Exception:
+            pass
+
+    # 3. 尝试下载视频并转写
+    transcript = ''
+    if not title and not desc:
+        return {'ok': False, 'error': '抖音解析失败：请确认已用 opencli douyin login 登录抖音（浏览器登录态）。'}
+
+    # 用独立 session：打开页面同时 network --follow 监听，刷新触发视频加载，抓 douyinvod CDN 地址
+    dl_session = 'dydl_' + str(int(time.time()))
+    net_file = wd / 'network.log'
+    try:
+        subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'open',video_url,'--window','background'],
+            capture_output=True, text=True, timeout=40, env=env, encoding='utf-8', errors='replace')
+        time.sleep(3)
+        # 后台启动 network --follow，输出重定向到文件（避免 PIPE 阻塞）
+        with open(net_file, 'w', encoding='utf-8') as nf:
+            net_proc = subprocess.Popen(
+                [opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'network','--follow','--all'],
+                stdout=nf, stderr=subprocess.DEVNULL, text=True, env=env, encoding='utf-8', errors='replace')
+            # 刷新页面触发视频地址请求
+            time.sleep(1)
+            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'eval','location.reload()'],
+                capture_output=True, text=True, timeout=20, env=env, encoding='utf-8', errors='replace')
+            time.sleep(8)
+            net_proc.terminate()
+            try:
+                net_proc.wait(timeout=5)
+            except Exception:
+                net_proc.kill()
+        # 读文件找 douyinvod mp4 地址
+        net_output = net_file.read_text(encoding='utf-8', errors='ignore') if net_file.exists() else ''
+        m = re.search(r'https?://[^"\'\s]*douyinvod\.com[^"\'\s]*video_mp4[^"\'\s]*', net_output)
+        if m:
+            vurl = m.group(0).replace('\\u002F','/').replace('\\/','/')
+            vf = wd / 'video.mp4'
+            # 直连下载（抖音 CDN 国内站，不走代理）
+            s2 = requests.Session(); s2.trust_env = False
+            s2.headers.update({'User-Agent':'Mozilla/5.0','Referer':'https://www.douyin.com/'})
+            with s2.get(vurl, stream=True, timeout=120) as resp:
+                resp.raise_for_status()
+                with open(vf,'wb') as f:
+                    shutil.copyfileobj(resp.raw, f)
+            if vf.exists() and vf.stat().st_size > 10000:
+                wtxt = transcribe_video(vf, wd)
+                if wtxt.strip():
+                    transcript = wtxt
+    except Exception as e:
+        log_line('douyin-dl-err ' + str(e)[:100])
+    finally:
+        try:
+            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'close'],
+                capture_output=True, text=True, timeout=15, env=env)
+        except Exception:
+            pass
+
+    body = transcript if transcript.strip() else desc
+    if not body.strip(): body = title
+    (wd/'transcript.txt').write_text(
+        f"标题:{title}\n作者:{author}\n来源:{url}\n平台:douyin\n\n--- 文案 ---\n\n{body}",
+        encoding='utf-8')
+    return {'ok': True, 'title': title or '抖音视频', 'platform': 'douyin',
+            'text': body[:8000], 'words': len(body.replace('\n','').replace(' ','')), 'dir': str(wd)}
 
 def transcribe_video(vf, wd):
     """ffmpeg 抽音频 -> faster-whisper 本地转写 -> 简体中文。失败返回空串。"""
@@ -251,8 +351,10 @@ def organize_with_llm(title, text):
     }).encode('utf-8')
     req = urllib.request.Request(LLM_BASE_URL + '/chat/completions', data=payload,
         headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + LLM_API_KEY})
+    # DeepSeek 国内站直连，禁用系统代理（否则被挂掉的 Clash 劫持导致 10061）
+    no_proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
+        with no_proxy_opener.open(req, timeout=180) as resp:
             data = json.loads(resp.read().decode('utf-8'))
         content = (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
         if not content:
