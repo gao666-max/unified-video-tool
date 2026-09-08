@@ -9,3 +9,4 @@ static/decks/
 # 快照和测试产物
 *.bak.*
 static/notecards/
+server_run.log

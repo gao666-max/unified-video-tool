@@ -75,16 +75,8 @@ def transcribe_segments(vf, wd):
     af = wd / 'audio.wav'
     subprocess.run([FFMPEG, '-y', '-i', str(vf), '-vn', '-acodec', 'pcm_s16le',
                     '-ar', '16000', '-ac', '1', str(af)], capture_output=True, timeout=180, check=True)
-    import faster_whisper, zhconv
-    model = faster_whisper.WhisperModel('small', device='cpu', compute_type='int8',
-                                        cpu_threads=8, download_root=WHISPER_DIR, local_files_only=True)
-    segs, _ = model.transcribe(str(af), language='zh', vad_filter=True, beam_size=5)
-    out = []
-    for s in segs:
-        t = zhconv.convert((s.text or '').strip(), 'zh-cn')
-        if t:
-            out.append({'start': round(s.start, 1), 'end': round(s.end, 1), 'text': t})
-    return out
+    import transcribe_engine
+    return transcribe_engine.transcribe_whisper_segments(str(af))
 
 
 def _duration(vf):

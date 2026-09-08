@@ -30,6 +30,8 @@ h1{font-size:20px;text-align:center;margin-bottom:18px}
 .loading{display:none;text-align:center;padding:28px;margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:10px}
 .loading.show{display:block}
 .spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--ink);border-radius:50%;animation:s .7s linear infinite;margin:0 auto 10px}
+.pbar{width:100%;height:6px;background:var(--line);border-radius:3px;margin-top:12px;overflow:hidden}
+.pbar-fill{height:100%;width:0;background:var(--ink);border-radius:3px;transition:width .4s ease}
 @keyframes s{to{transform:rotate(360deg)}}
 .err{display:none;margin-top:12px;padding:10px 14px;border-radius:8px;background:rgba(245,162,68,.1);color:#c7851a;font-size:12px}
 .err.show{display:block}
@@ -60,11 +62,11 @@ textarea:focus{border-color:rgba(27,35,51,.22);box-shadow:0 0 0 3px rgba(27,35,5
 
 <div class="pane show" id="pane-extract">
 <div class="tags"><span data-p="douyin">抖音</span><span data-p="xiaohongshu">小红书</span><span data-p="bilibili">B站</span><span data-p="youtube">YouTube</span></div>
-<div class="row"><input id="u" placeholder="粘贴视频链接..." autocomplete="off"><button id="b" onclick="go()">提取</button></div>
+<div class="row"><input id="u" placeholder="粘贴视频链接..." autocomplete="off"><button id="b" onclick="go()">提取</button><button id="rec" onclick="rec()" style="background:var(--hush);color:var(--ink);border:1px solid var(--line)">内录转写</button></div>
 <div class="ppt" id="ppt"><div class="ppt-t">长视频 → 图文PPT：上方关键帧 + 下方原话，可切 AI 改版</div>
 <div class="ppt-row"><div class="th" id="th"><span data-th="tcq-dark" class="on">深色高级</span><span data-th="light-minimal">浅色简洁</span></div>
 <button id="pb" onclick="mk()" disabled>生成PPT</button></div></div>
-<div class="loading" id="ld"><div class="spin"></div><div id="ldt" style="font-size:12px;color:var(--soft)">正在提取...</div></div>
+<div class="loading" id="ld"><div class="spin"></div><div id="ldt" style="font-size:12px;color:var(--soft)">正在提取...</div><div class="pbar"><div class="pbar-fill" id="pbf"></div></div><div id="pbt" style="font-size:11px;color:var(--faint);margin-top:6px"></div></div>
 <div class="err" id="er"></div>
 <div class="result" id="rs"><div class="rh"><b id="rt">-</b><em id="rp">-</em></div>
 <div style="font-size:11px;color:var(--faint);margin-bottom:10px">字数：<b id="rw" style="color:var(--ink)">0</b></div>
@@ -94,22 +96,24 @@ document.querySelectorAll('#nth span').forEach(function(t){t.addEventListener('c
 u.addEventListener('input',function(){var v=this.value.trim();document.querySelectorAll('.tags span').forEach(function(t){t.classList.remove('on')});if(!v)return;var d='';if(v.includes('douyin.com')||v.includes('iesdouyin'))d='douyin';else if(v.includes('xiaohongshu.com')||v.includes('xhslink'))d='xiaohongshu';else if(v.includes('bilibili.com')||v.includes('b23.tv'))d='bilibili';else if(v.includes('youtube.com')||v.includes('youtu.be'))d='youtube';document.querySelectorAll('.tags span').forEach(function(t){t.classList.toggle('on',t.dataset.p===d)});});
 u.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go();}});
 function addH(h){try{var a=JSON.parse(localStorage.getItem('extract_history')||'[]');a.unshift(h);localStorage.setItem('extract_history',JSON.stringify(a.slice(0,20)))}catch(e){}}
-function go(){var v=u.value.trim();var mm=v.match(/https?:\/\/[^\s<>"']+/);if(mm)v=mm[0].replace(/[.,;:!?)\]}>\u3002\uff0c\u3011\u3010\u300b\u300a]+$/,'');if(!v){se('\u8bf7\u5148\u7c98\u8d34\u94fe\u63a5');return}el('rs','');el('er','');el('ld','show');b.disabled=true;document.getElementById('pb').disabled=true;document.getElementById('ldt').textContent='正在提取...视频较长可能需要等待几分钟';
-fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:v})})
-.then(function(r){return r.json()}).then(function(d){el('ld','');b.disabled=false;document.getElementById('pb').disabled=false;
+function go(){var v=u.value.trim();var mm=v.match(/https?:\/\/[^\s<>"']+/);if(mm)v=mm[0].replace(/[.,;:!?)\]}>\u3002\uff0c\u3011\u3010\u300b\u300a]+$/,'');if(!v){se('\u8bf7\u5148\u7c98\u8d34\u94fe\u63a5');return}el('rs','');el('er','');el('ld','show');b.disabled=true;document.getElementById('pb').disabled=true;document.getElementById('ldt').textContent='正在提取...视频较长可能需要等待几分钟';document.getElementById('pbf').style.width='0%';document.getElementById('pbt').textContent='';
+var tid='t'+Date.now();var poll=startPoll(tid);
+fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:v,task_id:tid})})
+.then(function(r){return r.json()}).then(function(d){clearInterval(poll);el('ld','');b.disabled=false;document.getElementById('pb').disabled=false;
 if(!d.ok){se(d.error||'失败');return}R=d;
 document.getElementById('rt').textContent=d.title||'未命名';
 document.getElementById('rp').textContent=d.platform||'';
 document.getElementById('rw').textContent=d.words||0;
 document.getElementById('rx').textContent=d.text||'';
 el('rs','show');addH({title:d.title,platform:d.platform,url:v,words:d.words,time:new Date().toISOString()})
-}).catch(function(e){el('ld','');b.disabled=false;se('网络错误:'+e.message+'。确认终端窗口没有关闭，代理已开启。')});}
+}).catch(function(e){clearInterval(poll);el('ld','');b.disabled=false;se('网络错误:'+e.message+'。确认终端窗口没有关闭，代理已开启。')});}
 function se(m){var e=document.getElementById('er');e.textContent=m;e.classList.add('show')}
+function startPoll(tid){var t=setInterval(function(){fetch('/api/progress?task_id='+tid).then(function(r){return r.json()}).then(function(p){document.getElementById('pbf').style.width=(p.percent||0)+'%';document.getElementById('pbt').textContent=p.detail||p.stage||'';if(p.percent>=100)clearInterval(t)}).catch(function(){})},800);return t}
 function el(id,v){var e=document.getElementById(id);if(v==='show')e.classList.add('show');else e.classList.remove('show')}
 function cp(){if(!R)return;navigator.clipboard.writeText(R.text);se('已复制');setTimeout(function(){el('er','')},1500)}
 function dl(){if(!R)return;var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([R.text],{type:'text/plain;charset=utf-8'}));a.download=(R.title||'transcript').slice(0,40)+'.txt';a.click()}
 function od(){if(!R)return;var p={title:R.title,platform:R.platform||'',text:R.organized||R.text};fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).then(function(r){return r.json()}).then(function(d){if(d.ok){se('已存入: '+d.path)}else{se('保存失败: '+d.error)}setTimeout(function(){el('er','')},6000)}).catch(function(e){se('网络错误:'+e.message)})}
-function og(){if(!R)return;el('ld','show');document.getElementById('ldt').textContent='AI 整理中（DeepSeek）...';fetch('/api/organize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:R.title,text:R.text})}).then(function(r){return r.json()}).then(function(d){el('ld','');if(!d.ok){se(d.error||'整理失败');return}R.organized=d.text;document.getElementById('rx').textContent=d.text;document.getElementById('rw').textContent=(d.text||'').replace(/\s/g,'').length;se('已整理成笔记，可「存Obsidian」或「去做图文」');setTimeout(function(){el('er','')},4000)}).catch(function(e){el('ld','');se('网络错误:'+e.message)})}
+function og(){if(!R)return;el('ld','show');document.getElementById('ldt').textContent='AI 整理中（DeepSeek）...';document.getElementById('pbf').style.width='0%';document.getElementById('pbt').textContent='';var tid='t'+Date.now();var poll=startPoll(tid);fetch('/api/organize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:R.title,text:R.text,task_id:tid})}).then(function(r){return r.json()}).then(function(d){clearInterval(poll);el('ld','');if(!d.ok){se(d.error||'整理失败');return}R.organized=d.text;document.getElementById('rx').textContent=d.text;document.getElementById('rw').textContent=(d.text||'').replace(/\s/g,'').length;se('已整理成笔记，可「存Obsidian」或「去做图文」');setTimeout(function(){el('er','')},4000)}).catch(function(e){clearInterval(poll);el('ld','');se('网络错误:'+e.message)})}
 function mk(){var v=u.value.trim();var mm=v.match(/https?:\/\/[^\s<>"']+/);if(mm)v=mm[0].replace(/[.,;:!?)\]}>\u3002\uff0c\u3011\u3010\u300b\u300a]+$/,'');if(!v){se('\u8bf7\u5148\u7c98\u8d34\u94fe\u63a5');return}el('rs','');el('er','');el('ld','show');b.disabled=true;document.getElementById('pb').disabled=true;document.getElementById('ldt').textContent='正在生成PPT：下载→转写→抽关键帧→AI润色，可能需要几分钟';
 fetch('/api/deck',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:v,theme:pTh})})
 .then(function(r){return r.json()}).then(function(d){el('ld','');b.disabled=false;document.getElementById('pb').disabled=false;
@@ -127,4 +131,5 @@ w.appendChild(img);w.appendChild(a);g.appendChild(w)});
 document.getElementById('ngt').textContent='预览（'+d.style+' · '+(d.ai_cover?'AI 插画封面':'纯 CSS 封面')+' · 点图片右键保存）';
 document.getElementById('ng').classList.add('show');se('已生成 '+d.count+' 张图文卡片');setTimeout(function(){el('er','')},5000)})
 .catch(function(e){el('ld','');nb.disabled=false;se('网络错误:'+e.message)})}
+function rec(){el('rs','');el('er','');el('ld','show');b.disabled=true;var rb=document.getElementById('rec');rb.disabled=true;document.getElementById('ldt').textContent='内录模式：3秒后录90秒系统声音，请现在打开视频/直播并播放...';setTimeout(function(){document.getElementById('pbf').style.width='0%';document.getElementById('pbt').textContent='';var tid='t'+Date.now();var poll=startPoll(tid);fetch('/api/record',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duration:90,task_id:tid})}).then(function(r){return r.json()}).then(function(d){clearInterval(poll);el('ld','');b.disabled=false;rb.disabled=false;if(!d.ok){se(d.error||'内录失败');return}R=d;document.getElementById('rt').textContent=d.title||'内录转写';document.getElementById('rp').textContent=d.platform||'loopback';document.getElementById('rw').textContent=d.words||0;document.getElementById('rx').textContent=d.text||'';el('rs','show')}).catch(function(e){clearInterval(poll);el('ld','');b.disabled=false;rb.disabled=false;se('网络错误:'+e.message)})},3000)}
 </script></body></html>

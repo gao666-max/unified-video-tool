@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """粘贴即解析 —— 抖音/小红书/B站/YouTube 统一视频文案提取。单文件，零依赖。"""
 
-import http.server, json, os, re, shutil, subprocess, sys, time, urllib.parse, urllib.request
+import http.server, json, os, re, shutil, subprocess, sys, time, threading, urllib.parse, urllib.request
 from pathlib import Path
 
 # 清掉系统代理环境变量（Clash 没开时 127.0.0.1:7890 会劫持所有国内站请求）
@@ -70,7 +70,18 @@ def log_line(msg):
     except Exception:
         pass
 
-def process_douyin(url, wd):
+_TASKS = {}
+_TASKS_LOCK = threading.Lock()
+
+def _set_progress(task_id, stage, percent, detail=''):
+    with _TASKS_LOCK:
+        _TASKS[task_id] = {'stage': stage, 'percent': percent, 'detail': detail, 'ts': time.time()}
+
+def _get_progress(task_id):
+    with _TASKS_LOCK:
+        return _TASKS.get(task_id)
+
+def process_douyin(url, wd, progress_cb=None):
     """抖音解析：改用 OpenCLI 浏览器（登录态）拿标题/文案，再用 network 捕获视频 CDN 地址下载。
     旧的 SSR 分享页解析已失效（抖音 2026.8 反爬升级，_ROUTER_DATA 不再内嵌数据）。"""
     import requests
@@ -128,20 +139,21 @@ def process_douyin(url, wd):
     if not title and not desc:
         return {'ok': False, 'error': '抖音解析失败：请确认已用 opencli douyin login 登录抖音（浏览器登录态）。'}
 
-    # 用独立 session：打开页面同时 network --follow 监听，刷新触发视频加载，抓 douyinvod CDN 地址
+    # 用独立 session：先启动 network --follow 监听，再打开页面，抓 aweme/detail 与 douyinvod CDN 地址
     dl_session = 'dydl_' + str(int(time.time()))
     net_file = wd / 'network.log'
     try:
-        subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'open',video_url,'--window','background'],
-            capture_output=True, text=True, timeout=40, env=env, encoding='utf-8', errors='replace')
-        time.sleep(3)
-        # 后台启动 network --follow，输出重定向到文件（避免 PIPE 阻塞）
+        # 必须先开监听再开页面：aweme/detail 和音视频 CDN 请求在页面加载后 1~2 秒内就发出，
+        # 若先 open 再监听会整批错过，导致抓不到 douyinvod 地址，视频只能退回标题文案
         with open(net_file, 'w', encoding='utf-8') as nf:
             net_proc = subprocess.Popen(
                 [opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'network','--follow','--all'],
                 stdout=nf, stderr=subprocess.DEVNULL, text=True, env=env, encoding='utf-8', errors='replace')
-            # 点击播放触发视频地址请求（不用 location.reload，会搞挂 --follow 监听）
             time.sleep(1)
+            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'open',video_url,'--window','background'],
+                capture_output=True, text=True, timeout=40, env=env, encoding='utf-8', errors='replace')
+            time.sleep(6)
+            # 触发播放，确保音频/视频流请求发出（不用 location.reload，会搞挂 --follow 监听）
             subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'eval',
                 '(function(){var v=document.querySelector("video");if(v){v.muted=true;v.play();}return !!v;})()'],
                 capture_output=True, text=True, timeout=20, env=env, encoding='utf-8', errors='replace')
@@ -175,7 +187,7 @@ def process_douyin(url, wd):
                     with open(af,'wb') as f:
                         shutil.copyfileobj(resp.raw, f)
                 if af.exists() and af.stat().st_size > 10000:
-                    wtxt = transcribe_audio_file(af, wd)
+                    wtxt = transcribe_audio_file(af, wd, progress_cb=progress_cb)
                     if wtxt.strip():
                         transcript = wtxt
             except Exception as e:
@@ -191,7 +203,7 @@ def process_douyin(url, wd):
                 with open(vf,'wb') as f:
                     shutil.copyfileobj(resp.raw, f)
             if vf.exists() and vf.stat().st_size > 10000:
-                wtxt = transcribe_video(vf, wd)
+                wtxt = transcribe_video(vf, wd, use_sherpa=True, progress_cb=progress_cb)
                 if wtxt.strip():
                     transcript = wtxt
     except Exception as e:
@@ -211,32 +223,62 @@ def process_douyin(url, wd):
     return {'ok': True, 'title': title or '抖音视频', 'platform': 'douyin',
             'text': body[:8000], 'words': len(body.replace('\n','').replace(' ','')), 'dir': str(wd)}
 
-def transcribe_video(vf, wd):
-    """ffmpeg 抽音频 -> faster-whisper 本地转写 -> 简体中文。失败返回空串。"""
+def transcribe_video(vf, wd, use_sherpa=False, progress_cb=None):
+    """ffmpeg 抽音频 -> 本地转写（GPU优先/CPU兜底，模型复用）-> 简体中文。失败返回空串。"""
     try:
+        if progress_cb:
+            progress_cb(1, '抽取音频')
         af = str(wd / 'audio.wav')
         subprocess.run([FFMPEG,'-y','-i',str(vf),'-vn','-acodec','pcm_s16le','-ar','16000','-ac','1',af],
             capture_output=True, timeout=180, check=True)
-        from faster_whisper import WhisperModel
-        import zhconv
-        model = WhisperModel('small', device='cpu', compute_type='int8', cpu_threads=8,
-            download_root=WHISPER_DIR, local_files_only=True)
-        segs, _ = model.transcribe(af, language='zh', vad_filter=True, beam_size=5)
-        return zhconv.convert('\n'.join(s.text.strip() for s in segs if s.text.strip()), 'zh-cn')
+        import transcribe_engine
+        return transcribe_engine.transcribe_auto(af, use_sherpa=use_sherpa, progress_cb=progress_cb)
     except Exception:
         return ''
 
-def transcribe_audio_file(af, wd):
+def transcribe_audio_file(af, wd, use_sherpa=True, progress_cb=None):
     """直接转写音频文件（抖音 audio 流已是纯音频，无需 ffmpeg 抽）。失败返回空串。"""
     try:
-        from faster_whisper import WhisperModel
-        import zhconv
-        model = WhisperModel('small', device='cpu', compute_type='int8', cpu_threads=8,
-            download_root=WHISPER_DIR, local_files_only=True)
-        segs, _ = model.transcribe(str(af), language='zh', vad_filter=True, beam_size=5)
-        return zhconv.convert('\n'.join(s.text.strip() for s in segs if s.text.strip()), 'zh-cn')
+        import transcribe_engine
+        return transcribe_engine.transcribe_auto(str(af), use_sherpa=use_sherpa, progress_cb=progress_cb)
     except Exception:
         return ''
+
+def record_system_audio(duration, wd, progress_cb=None):
+    """WASAPI loopback 内录系统正在播放的声音 -> 16k mono wav。返回 wav 路径，失败/无声音返回 None。"""
+    try:
+        import _wasapi, wave, struct, time as _t
+        rec = _wasapi.LoopbackRecorder(sample_rate=16000, channels=1)
+        rec.start()
+        wav_path = str(wd / 'loopback.wav')
+        buf = []
+        t_start = _t.time()
+        t_end = t_start + duration
+        while _t.time() < t_end:
+            blk = rec.read_block()
+            if blk:
+                buf.extend(blk)
+            else:
+                _t.sleep(0.05)
+            if progress_cb:
+                elapsed = int(_t.time() - t_start)
+                progress_cb(min(95, int(elapsed / duration * 95)), f'已录 {elapsed}/{duration} 秒')
+        rec.stop()
+        if not buf:
+            return None
+        samples = bytearray()
+        for v in buf:
+            iv = int(max(-1.0, min(1.0, v)) * 32767)
+            samples += struct.pack('<h', iv)
+        with wave.open(wav_path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(bytes(samples))
+        return wav_path
+    except Exception as e:
+        log_line('loopback-err ' + str(e)[:120])
+        return None
 
 def _xhs_clean_url(url):
     import urllib.parse as _up
@@ -250,7 +292,7 @@ def _xhs_unescape(s):
     s = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), s)
     return s.replace('\\n', '\n').replace('\\t', '').replace('\\/', '/').replace('\\"', '"')
 
-def process_xiaohongshu(url, wd):
+def process_xiaohongshu(url, wd, progress_cb=None):
     """小红书：OpenCLI 取标题/作者/正文 + 页面抓取视频流 -> 下载 -> 本地转写。
     视频缺失或转写失败时退化为返回正文文案。"""
     env = os.environ.copy()
@@ -309,7 +351,7 @@ def process_xiaohongshu(url, wd):
             with opener.open(req, timeout=240) as resp, open(vf, 'wb') as f:
                 shutil.copyfileobj(resp, f)
             if vf.stat().st_size > 10000:
-                whisper_txt = transcribe_video(vf, wd)
+                whisper_txt = transcribe_video(vf, wd, use_sherpa=True, progress_cb=progress_cb)
                 if whisper_txt.strip():
                     transcript = (caption + '\n\n--- 视频语音转写 ---\n\n' + whisper_txt) if caption.strip() else whisper_txt
         except Exception:
@@ -326,10 +368,12 @@ def process_xiaohongshu(url, wd):
     return {'ok': True, 'title': display_title, 'platform': 'xiaohongshu',
             'text': transcript[:8000], 'words': len(transcript.replace('\n','').replace(' ','')), 'dir': str(wd)}
 
-def process_other(url, wd, platform):
+def process_other(url, wd, platform, progress_cb=None):
     if '://' not in url or not urllib.parse.urlparse(url).netloc:
         return {'ok': False, 'error': '\u672a\u8bc6\u522b\u5230\u6709\u6548\u94fe\u63a5\uff0c\u8bf7\u7c98\u8d34\u5b8c\u6574\u94fe\u63a5'}
     vf = wd / 'video.mp4'; env = net_env()
+    if progress_cb:
+        progress_cb(2, '下载视频中')
     for strat in [['-f','bv*+ba/b','--merge-output-format','mp4','--ffmpeg-location',FFMPEG_DIR,'--no-playlist','--no-check-certificates'],
                   ['-f','bv*[height<=480]+ba/b[height<=480]','--merge-output-format','mp4','--ffmpeg-location',FFMPEG_DIR,'--no-playlist','--no-check-certificates'],
                   ['-f','wv*+wa/w','--merge-output-format','mp4','--ffmpeg-location',FFMPEG_DIR,'--no-playlist','--no-check-certificates']]:
@@ -360,7 +404,7 @@ def process_other(url, wd, platform):
     except: pass
 
     if not text.strip() and vf.exists():
-        text = transcribe_video(vf, wd)
+        text = transcribe_video(vf, wd, progress_cb=progress_cb)
 
     (wd/'transcript.txt').write_text(f"标题:{wd.name}\n来源:{url}\n\n---\n{text}", encoding='utf-8')
     return {'ok': True, 'title': wd.name, 'platform': platform,
@@ -373,36 +417,93 @@ def _extract_url(text):
     return u
 
 
-def organize_with_llm(title, text):
+def _llm_chat(system, user, max_tokens=4000, temperature=0.3):
+    """单次 LLM 调用，返回 content 文本；失败抛异常。"""
+    payload = json.dumps({
+        'model': LLM_MODEL,
+        'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
+        'temperature': temperature,
+        'max_tokens': max_tokens,
+    }).encode('utf-8')
+    req = urllib.request.Request(LLM_BASE_URL + '/chat/completions', data=payload,
+        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + LLM_API_KEY})
+    no_proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with no_proxy_opener.open(req, timeout=300) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+    content = (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
+    if not content:
+        raise RuntimeError('AI 返回为空，请检查模型名或 Key')
+    return content.strip()
+
+
+def _split_chunks(text, chunk_size=9000):
+    """按字符切块，尽量在换行（段落）边界断，避免切断句子。"""
+    text = text.strip()
+    if len(text) <= chunk_size:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        if end < len(text):
+            nl = text.rfind('\n', start + chunk_size // 2, end)
+            if nl != -1:
+                end = nl + 1
+        c = text[start:end].strip()
+        if c:
+            chunks.append(c)
+        start = end
+    return chunks
+
+
+_ORG_SYSTEM = ('你是一个中文笔记整理助手。把用户提供的视频转录文本整理成一篇结构清晰、逻辑清楚的 Markdown 笔记。'
+    '要求：1) 先给一行【一句话总结】；2) 正文按逻辑分小节，用 ## 或 ### 标题；3) 关键信息用列表和加粗；'
+    '4) 修正错别字、去口语和重复，但保留数字、人名、术语等事实；5) 最后给【核心要点】列表和【行动建议】（如适用）；6) 只输出整理后的笔记正文，不要解释。')
+
+
+def organize_with_llm(title, text, progress_cb=None):
     if not LLM_API_KEY:
         return {'ok': False, 'error': '未配置 LLM API Key，请在 D:\\unified-video-tool\\.env 里填写 LLM_API_KEY（DeepSeek/OpenAI 兼容均可）'}
     if not text or not text.strip():
         return {'ok': False, 'error': '没有可整理的内容'}
-    system = ('你是一个中文笔记整理助手。把用户提供的视频转录文本整理成一篇结构清晰、逻辑清楚的 Markdown 笔记。'
-        '要求：1) 先给一行【一句话总结】；2) 正文按逻辑分小节，用 ## 或 ### 标题；3) 关键信息用列表和加粗；'
-        '4) 修正错别字、去口语和重复，但保留数字、人名、术语等事实；5) 最后给【核心要点】列表和【行动建议】（如适用）；6) 只输出整理后的笔记正文，不要解释。')
-    user = f'标题：{title}\n\n转录文本：\n{text[:12000]}'
-    payload = json.dumps({
-        'model': LLM_MODEL,
-        'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
-        'temperature': 0.3,
-        'max_tokens': 4000,
-    }).encode('utf-8')
-    req = urllib.request.Request(LLM_BASE_URL + '/chat/completions', data=payload,
-        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + LLM_API_KEY})
-    # DeepSeek 国内站直连，禁用系统代理（否则被挂掉的 Clash 劫持导致 10061）
-    no_proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with no_proxy_opener.open(req, timeout=180) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        content = (data.get('choices') or [{}])[0].get('message', {}).get('content', '')
-        if not content:
-            return {'ok': False, 'error': 'AI 返回为空，请检查模型名或 Key'}
-        return {'ok': True, 'text': content.strip()}
-    except urllib.error.HTTPError as e:
-        return {'ok': False, 'error': 'API 错误 %s: %s' % (e.code, e.read().decode('utf-8', 'ignore')[:200])}
-    except Exception as e:
+    text = text.strip()
+
+    def _err(e):
+        if isinstance(e, urllib.error.HTTPError):
+            return {'ok': False, 'error': 'API 错误 %s: %s' % (e.code, e.read().decode('utf-8', 'ignore')[:200])}
         return {'ok': False, 'error': 'AI 请求失败: %s' % e}
+
+    # 短文本：单次整理
+    if len(text) <= 9000:
+        try:
+            return {'ok': True, 'text': _llm_chat(_ORG_SYSTEM, f'标题：{title}\n\n转录文本：\n{text}')}
+        except Exception as e:
+            return _err(e)
+
+    # 长文本：分块 map-reduce
+    chunks = _split_chunks(text, 9000)
+    map_system = ('你是一个中文笔记整理助手。把下面这段视频转录文本整理成简洁的小节要点，'
+                  '保留关键数字、人名、术语、结论、时间线。用列表输出，去口语和重复，控制在 600 字以内。')
+    parts = []
+    for i, chunk in enumerate(chunks, 1):
+        if progress_cb:
+            progress_cb(int(i / len(chunks) * 80), f'整理第 {i}/{len(chunks)} 段')
+        try:
+            s = _llm_chat(map_system, f'（第 {i}/{len(chunks)} 段转录）\n\n{chunk}', max_tokens=900)
+            parts.append(f'## 第 {i} 段\n{s}')
+        except Exception as e:
+            parts.append(f'## 第 {i} 段\n（本段整理失败：{str(e)[:80]}）')
+    merged = '\n\n'.join(parts)
+    reduce_system = ('你是一个中文笔记整理助手。下面是长视频各分段的要点，请合并成一篇结构清晰、逻辑清楚的完整 Markdown 笔记：'
+        '1) 先一行【一句话总结】；2) 按主题重新分小节（## 标题，不要按"第几段"分，要按内容主题）；'
+        '3) 关键信息用列表和加粗；4) 去重复、补逻辑；5) 最后给【核心要点】和【行动建议】（如适用）；6) 只输出笔记正文，不要解释。')
+    if progress_cb:
+        progress_cb(85, '合并各段要点')
+    try:
+        final = _llm_chat(reduce_system, f'标题：{title}\n\n各分段要点：\n{merged}', max_tokens=4000)
+        return {'ok': True, 'text': final}
+    except Exception as e:
+        return {'ok': True, 'text': f'# {title}\n\n> 说明：长文分段整理，最终合并失败（{str(e)[:80]}），以下为各段要点。\n\n{merged}'}
 
 def save_to_obsidian(title, text):
     if not text or not text.strip():
@@ -419,8 +520,31 @@ def save_to_obsidian(title, text):
     except Exception as e:
         return {'ok': False, 'error': '保存失败: %s' % e}
 
+def handle_record(data):
+    task_id = (data.get('task_id') or '').strip() or ('task_' + str(int(time.time()*1000)))
+    duration = int(data.get('duration') or 90)
+    duration = max(10, min(600, duration))
+    out = Path(OUTPUT_BASE); out.mkdir(parents=True, exist_ok=True)
+    wd = out / f'record_{int(time.time())}'; wd.mkdir(parents=True, exist_ok=True)
+    log_line('record start duration=' + str(duration))
+    def prog(percent, detail):
+        _set_progress(task_id, detail, percent, detail)
+    _set_progress(task_id, '内录', 0, '开始内录')
+    wav = record_system_audio(duration, wd, progress_cb=prog)
+    if not wav:
+        return {'ok': False, 'error': '内录未捕获到声音：请确认视频/直播正在播放且系统音量非0'}
+    _set_progress(task_id, '转写', 95, '内录完成，转写中')
+    text = transcribe_audio_file(wav, wd, use_sherpa=False, progress_cb=prog)
+    if not text.strip():
+        return {'ok': False, 'error': '已内录但转写为空：可能录到的是静音或非人声'}
+    _set_progress(task_id, '完成', 100, '完成')
+    (wd / 'transcript.txt').write_text(text, encoding='utf-8')
+    return {'ok': True, 'title': '内录转写', 'platform': 'loopback',
+            'text': text[:8000], 'words': len(text.replace('\n','').replace(' ','')), 'dir': str(wd)}
+
 def handle_api(path, body):
     data = json.loads(body.lstrip('\ufeff')) if body else {}
+    task_id = (data.get('task_id') or '').strip() or ('task_' + str(int(time.time()*1000)))
     url = _extract_url((data.get('url') or '').strip())
     if not url or '://' not in url:
         return 400, {'ok': False, 'error': '\u672a\u8bc6\u522b\u5230\u6709\u6548\u94fe\u63a5\u3002\u8bf7\u53ea\u7c98\u8d34\u89c6\u9891/\u7b14\u8bb0\u94fe\u63a5\uff0c\u6216\u4ece\u5206\u4eab\u6587\u672c\u4e2d\u590d\u5236\u5b8c\u6574\u94fe\u63a5'}
@@ -428,11 +552,19 @@ def handle_api(path, body):
     platform = detect(url)
     out = Path(OUTPUT_BASE); out.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r'[^\w\-.]+','_', url.split('/')[-1] or 'video').strip('_.')[:50] or 'video'
-    wd = out / f'{safe}_{int(time.time())}'; wd.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime('%Y%m%d-%H%M%S')
+    wd = out / f'{platform}_{safe}_{ts}'; wd.mkdir(parents=True, exist_ok=True)
+    meta = {'source': url, 'platform': platform, 'created_at': time.strftime('%Y-%m-%d %H:%M:%S')}
+    (wd / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
 
-    if platform == 'douyin': result = process_douyin(url, wd)
-    elif platform == 'xiaohongshu': result = process_xiaohongshu(url, wd)
-    else: result = process_other(url, wd, platform)
+    _set_progress(task_id, '准备', 0, '解析链接')
+    def prog(percent, detail):
+        _set_progress(task_id, detail, percent, detail)
+
+    if platform == 'douyin': result = process_douyin(url, wd, progress_cb=prog)
+    elif platform == 'xiaohongshu': result = process_xiaohongshu(url, wd, progress_cb=prog)
+    else: result = process_other(url, wd, platform, progress_cb=prog)
+    _set_progress(task_id, '完成', 100, '完成')
     log_line('req platform=' + platform + ' ok=' + str(result.get('ok')) + ' err=' + str(result.get('error', ''))[:120] + ' url=' + url[:90])
 
     return 200, result
@@ -486,7 +618,7 @@ h1{font-size:20px;text-align:center;margin-bottom:20px}
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(27,35,51,.12);border-radius:4px}
 </style></head><body><div class="wrap">
 <h1>视频文案提取</h1><div class="tags"><span data-p="douyin">抖音</span><span data-p="xiaohongshu">小红书</span><span data-p="bilibili">B站</span><span data-p="youtube">YouTube</span></div>
-<div class="row"><input id="u" placeholder="粘贴视频链接..." autocomplete="off"><button id="b" onclick="go()">提取</button></div>
+<div class="row"><input id="u" placeholder="粘贴视频链接..." autocomplete="off"><button id="b" onclick="go()">提取</button><button id="rec" onclick="rec()" style="background:var(--hush);color:var(--ink);border:1px solid var(--line)">内录转写</button></div>
 <div class="ppt" id="ppt"><div class="ppt-t">长视频 → 图文PPT：上方关键帧 + 下方原话，可切 AI 改版</div>
 <div class="ppt-row"><div class="th" id="th"><span data-th="tcq-dark" class="on">深色高级</span><span data-th="light-minimal">浅色简洁</span></div>
 <button id="pb" onclick="mk()" disabled>生成PPT</button></div></div>
@@ -536,6 +668,7 @@ function cp(){if(!R)return;navigator.clipboard.writeText(R.text);se('已复制')
 function dl(){if(!R)return;var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([R.text],{type:'text/plain;charset=utf-8'}));a.download=(R.title||'transcript').slice(0,40)+'.txt';a.click()}
 function od(){if(!R)return;var p={title:R.title,platform:R.platform||'',text:R.organized||R.text};fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).then(function(r){return r.json()}).then(function(d){if(d.ok){se('已存入: '+d.path)}else{se('保存失败: '+d.error)}setTimeout(function(){el('er','')},5000)}).catch(function(e){se('网络错误:'+e.message)})}
 function og(){if(!R)return;el('ld','show');fetch('/api/organize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:R.title,text:R.text})}).then(function(r){return r.json()}).then(function(d){el('ld','');if(!d.ok){se(d.error||'整理失败');return}R.organized=d.text;document.getElementById('rx').textContent=d.text;document.getElementById('rw').textContent=(d.text||'').replace(/\s/g,'').length;se('已整理成笔记，可点“存Obsidian”');setTimeout(function(){el('er','')},4000)}).catch(function(e){el('ld','');se('网络错误:'+e.message)})}
+function rec(){el('rs','');el('er','');el('ld','show');b.disabled=true;var rb=document.getElementById('rec');rb.disabled=true;document.getElementById('ldt').textContent='内录模式：3秒后录90秒系统声音，请现在打开视频/直播并播放...';setTimeout(function(){fetch('/api/record',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duration:90})}).then(function(r){return r.json()}).then(function(d){el('ld','');b.disabled=false;rb.disabled=false;if(!d.ok){se(d.error||'内录失败');return}R=d;document.getElementById('rt').textContent=d.title||'内录转写';document.getElementById('rp').textContent=d.platform||'loopback';document.getElementById('rw').textContent=d.words||0;document.getElementById('rx').textContent=d.text||'';el('rs','show')}).catch(function(e){el('ld','');b.disabled=false;rb.disabled=false;se('网络错误:'+e.message)})},3000)}
 </script></body></html>'''
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -555,6 +688,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == '/api/health':
             self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers()
             self.wfile.write(json.dumps({'ok':True}).encode())
+        elif self.path.startswith('/api/progress'):
+            qs = urllib.parse.urlparse(self.path).query
+            task_id = urllib.parse.parse_qs(qs).get('task_id', [''])[0]
+            p = _get_progress(task_id) or {'stage': 'unknown', 'percent': 0, 'detail': ''}
+            self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers()
+            self.wfile.write(json.dumps(p, ensure_ascii=False).encode())
         elif self.path.startswith('/notecards/'):
             name = urllib.parse.unquote(self.path[len('/notecards/'):])
             if not re.fullmatch(r'[\w.\-]+\.png', name or ''):
@@ -592,12 +731,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
     def do_POST(self):
-        if self.path in ('/api/extract', '/api/save', '/api/organize', '/api/deck', '/api/notecard'):
+        if self.path in ('/api/extract', '/api/save', '/api/organize', '/api/deck', '/api/notecard', '/api/record'):
             cl = int(self.headers.get('Content-Length',0))
             body = self.rfile.read(cl).decode() if cl else ''
             data = json.loads(body.lstrip('\ufeff')) if body else {}
             if self.path == '/api/extract':
                 code, result = handle_api(self.path, body)
+            elif self.path == '/api/record':
+                code, result = 200, handle_record(data)
             elif self.path == '/api/deck':
                 url = _extract_url((data.get('url') or '').strip())
                 theme = (data.get('theme') or 'tcq-dark').strip() or 'tcq-dark'
@@ -613,7 +754,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if self.path == '/api/save':
                     code, result = 200, save_to_obsidian((data.get('title') or '').strip(), (data.get('text') or '').strip())
                 else:
-                    code, result = 200, organize_with_llm((data.get('title') or '').strip(), (data.get('text') or '').strip())
+                    tid = (data.get('task_id') or '').strip() or ('task_' + str(int(time.time()*1000)))
+                    def oprog(percent, detail):
+                        _set_progress(tid, detail, percent, detail)
+                    code, result = 200, organize_with_llm((data.get('title') or '').strip(), (data.get('text') or '').strip(), progress_cb=oprog)
             self.send_response(code); self.send_header('Content-Type','application/json; charset=utf-8')
             self.send_header('Cache-Control','no-store'); self.end_headers()
             self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
@@ -623,4 +767,4 @@ class Handler(http.server.BaseHTTPRequestHandler):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', '5051'))
     print(f'服务已启动: http://127.0.0.1:{port}')
-    http.server.HTTPServer(('127.0.0.1', port), Handler).serve_forever()
+    http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
