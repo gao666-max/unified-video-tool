@@ -542,6 +542,123 @@ def handle_record(data):
     return {'ok': True, 'title': '内录转写', 'platform': 'loopback',
             'text': text[:8000], 'words': len(text.replace('\n','').replace(' ','')), 'dir': str(wd)}
 
+# ---------------- 直播代听（持续监听） ----------------
+_LIVE = None
+_LIVE_LOCK = threading.Lock()
+
+def _write_wav_chunk(path, samples):
+    import wave, struct
+    data = bytearray()
+    for v in samples:
+        data += struct.pack('<h', int(max(-1.0, min(1.0, v)) * 32767))
+    with wave.open(str(path), 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(bytes(data))
+
+def _live_record_loop(session, stop_event):
+    """内录线程：WASAPI loopback 持续录，约 5s 一个分块写 chunks/。"""
+    import _wasapi, time as _t
+    try:
+        rec = _wasapi.LoopbackRecorder(sample_rate=16000, channels=1)
+        rec.start()
+        chunks_dir = session / 'chunks'
+        buf = []
+        seg_start = _t.time()
+        idx = 0
+        while not stop_event.is_set():
+            blk = rec.read_block()
+            if blk:
+                buf.extend(blk)
+            else:
+                _t.sleep(0.05)
+            if _t.time() - seg_start >= 5 and buf:
+                _write_wav_chunk(chunks_dir / f'seg_{idx:05d}.wav', buf)
+                buf = []
+                idx += 1
+                seg_start = _t.time()
+        if buf:
+            _write_wav_chunk(chunks_dir / f'seg_{idx:05d}.wav', buf)
+        rec.stop()
+    except Exception as e:
+        log_line('live-record-err ' + str(e)[:120])
+
+def _live_transcribe_loop(session, stop_event):
+    """转写线程：轮询 chunks/ 新分块，转写后追加到全局 transcript。"""
+    import transcribe_engine, time as _t
+    chunks_dir = session / 'chunks'
+    processed = set()
+    while True:
+        chunks = sorted(chunks_dir.glob('seg_*.wav'))
+        for c in chunks:
+            if c.name in processed:
+                continue
+            try:
+                txt = transcribe_engine.transcribe_whisper(str(c))
+            except Exception:
+                txt = ''
+            if txt.strip():
+                with _LIVE_LOCK:
+                    if _LIVE and _LIVE.get('running'):
+                        _LIVE['transcript'] = (_LIVE.get('transcript') or '') + txt + '\n'
+            processed.add(c.name)
+        if stop_event.is_set():
+            pending = [c for c in chunks if c.name not in processed]
+            if not pending:
+                break
+        _t.sleep(1)
+
+def handle_live_start(data):
+    global _LIVE
+    with _LIVE_LOCK:
+        if _LIVE and _LIVE.get('running'):
+            return {'ok': False, 'error': '直播监听已在运行中'}
+        session = Path(OUTPUT_BASE) / ('live_' + time.strftime('%Y%m%d-%H%M%S'))
+        session.mkdir(parents=True, exist_ok=True)
+        (session / 'chunks').mkdir(exist_ok=True)
+        stop_event = threading.Event()
+        _LIVE = {
+            'running': True,
+            'session': str(session),
+            'transcript': '',
+            'stop_event': stop_event,
+            'started_at': time.time(),
+        }
+    t_rec = threading.Thread(target=_live_record_loop, args=(session, stop_event), daemon=True)
+    t_tr = threading.Thread(target=_live_transcribe_loop, args=(session, stop_event), daemon=True)
+    t_rec.start(); t_tr.start()
+    with _LIVE_LOCK:
+        _LIVE['t_rec'] = t_rec; _LIVE['t_tr'] = t_tr
+    log_line('live start session=' + str(session))
+    return {'ok': True, 'session': str(session)}
+
+def handle_live_stop(data):
+    global _LIVE
+    with _LIVE_LOCK:
+        if not _LIVE or not _LIVE.get('running'):
+            return {'ok': False, 'error': '没有在运行的直播监听'}
+        _LIVE['running'] = False
+        _LIVE['stop_event'].set()
+        transcript = _LIVE.get('transcript') or ''
+        session = _LIVE['session']
+        _LIVE = None
+    try:
+        Path(session, 'transcript.txt').write_text(transcript, encoding='utf-8')
+    except Exception:
+        pass
+    return {'ok': True, 'transcript': transcript,
+            'words': len(transcript.replace('\n', '').replace(' ', '')),
+            'session': session}
+
+def handle_live_status(data):
+    with _LIVE_LOCK:
+        if not _LIVE:
+            return {'running': False, 'transcript': '', 'elapsed': 0}
+        return {'running': _LIVE.get('running', False),
+                'transcript': _LIVE.get('transcript') or '',
+                'elapsed': int(time.time() - _LIVE.get('started_at', time.time()))}
+
 def handle_api(path, body):
     data = json.loads(body.lstrip('\ufeff')) if body else {}
     task_id = (data.get('task_id') or '').strip() or ('task_' + str(int(time.time()*1000)))
@@ -688,6 +805,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == '/api/health':
             self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers()
             self.wfile.write(json.dumps({'ok':True}).encode())
+        elif self.path == '/api/live/status':
+            self.send_response(200); self.send_header('Content-Type','application/json'); self.end_headers()
+            self.wfile.write(json.dumps(handle_live_status({}), ensure_ascii=False).encode())
         elif self.path.startswith('/api/progress'):
             qs = urllib.parse.urlparse(self.path).query
             task_id = urllib.parse.parse_qs(qs).get('task_id', [''])[0]
@@ -731,7 +851,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_response(404); self.end_headers()
     def do_POST(self):
-        if self.path in ('/api/extract', '/api/save', '/api/organize', '/api/deck', '/api/notecard', '/api/record'):
+        if self.path in ('/api/extract', '/api/save', '/api/organize', '/api/deck', '/api/notecard', '/api/record', '/api/live/start', '/api/live/stop'):
             cl = int(self.headers.get('Content-Length',0))
             body = self.rfile.read(cl).decode() if cl else ''
             data = json.loads(body.lstrip('\ufeff')) if body else {}
@@ -739,6 +859,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 code, result = handle_api(self.path, body)
             elif self.path == '/api/record':
                 code, result = 200, handle_record(data)
+            elif self.path == '/api/live/start':
+                code, result = 200, handle_live_start(data)
+            elif self.path == '/api/live/stop':
+                code, result = 200, handle_live_stop(data)
             elif self.path == '/api/deck':
                 url = _extract_url((data.get('url') or '').strip())
                 theme = (data.get('theme') or 'tcq-dark').strip() or 'tcq-dark'

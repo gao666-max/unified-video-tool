@@ -58,7 +58,7 @@ textarea:focus{border-color:rgba(27,35,51,.22);box-shadow:0 0 0 3px rgba(27,35,5
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(27,35,51,.12);border-radius:4px}
 </style></head><body><div class="wrap">
 <h1>📹 视频 → 笔记 → 图文</h1>
-<div class="tabs"><span class="on" data-t="extract">📝 提取笔记</span><span data-t="notecard">🎨 笔记生图</span></div>
+<div class="tabs"><span class="on" data-t="extract">📝 提取笔记</span><span data-t="notecard">🎨 笔记生图</span><span data-t="live">🎙️ 直播代听</span></div>
 
 <div class="pane show" id="pane-extract">
 <div class="tags"><span data-p="douyin">抖音</span><span data-p="xiaohongshu">小红书</span><span data-p="bilibili">B站</span><span data-p="youtube">YouTube</span></div>
@@ -83,6 +83,13 @@ textarea:focus{border-color:rgba(27,35,51,.22);box-shadow:0 0 0 3px rgba(27,35,5
 <button id="nb" onclick="gen()">生成图文卡片</button></div>
 <div class="hint2">没配 AI 生图 key 时封面用纯 CSS 占位，不耽误出图；配好 IMAGE_API_KEY 后自动换成 AI 插画封面。</div>
 <div class="ng" id="ng"><div class="ng-t" id="ngt">预览</div><div class="ng-grid" id="ngg"></div></div>
+</div>
+
+<div class="pane" id="pane-live">
+<div class="nc-t">直播/会议代听：打开直播或视频播放页并出声，点「开始监听」，边听边实时转写。停止后拿到完整文字稿，可 AI 整理或存 Obsidian。</div>
+<div class="row" style="margin-bottom:12px"><button id="lb" onclick="liveToggle()" style="background:var(--accent);color:#fff;min-width:120px">开始监听</button><span id="lst" style="font-size:12px;color:var(--faint);align-self:center">未监听</span></div>
+<div class="rt" id="lx" style="max-height:440px;min-height:220px">（点「开始监听」后，这里实时滚动显示转写文字）</div>
+<div class="ra" id="lra" style="display:none;margin-top:12px"><button onclick="liveOrganize()">AI整理</button><button onclick="liveSave()">存Obsidian</button><button onclick="liveCopy()">复制</button></div>
 </div>
 </div>
 <script>
@@ -132,4 +139,18 @@ document.getElementById('ngt').textContent='预览（'+d.style+' · '+(d.ai_cove
 document.getElementById('ng').classList.add('show');se('已生成 '+d.count+' 张图文卡片');setTimeout(function(){el('er','')},5000)})
 .catch(function(e){el('ld','');nb.disabled=false;se('网络错误:'+e.message)})}
 function rec(){el('rs','');el('er','');el('ld','show');b.disabled=true;var rb=document.getElementById('rec');rb.disabled=true;document.getElementById('ldt').textContent='内录模式：3秒后录90秒系统声音，请现在打开视频/直播并播放...';setTimeout(function(){document.getElementById('pbf').style.width='0%';document.getElementById('pbt').textContent='';var tid='t'+Date.now();var poll=startPoll(tid);fetch('/api/record',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({duration:90,task_id:tid})}).then(function(r){return r.json()}).then(function(d){clearInterval(poll);el('ld','');b.disabled=false;rb.disabled=false;if(!d.ok){se(d.error||'内录失败');return}R=d;document.getElementById('rt').textContent=d.title||'内录转写';document.getElementById('rp').textContent=d.platform||'loopback';document.getElementById('rw').textContent=d.words||0;document.getElementById('rx').textContent=d.text||'';el('rs','show')}).catch(function(e){clearInterval(poll);el('ld','');b.disabled=false;rb.disabled=false;se('网络错误:'+e.message)})},3000)}
+var livePoll=null,liveRunning=false;
+function liveToggle(){if(!liveRunning)liveStart();else liveStop();}
+function liveStart(){el('er','');el('ld','show');var lb=document.getElementById('lb');lb.disabled=true;document.getElementById('ldt').textContent='正在启动监听...';
+fetch('/api/live/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})}).then(function(r){return r.json()}).then(function(d){el('ld','');lb.disabled=false;
+if(!d.ok){se(d.error||'启动失败');return}liveRunning=true;lb.textContent='停止监听';lb.style.background='#c0392b';document.getElementById('lst').textContent='监听中...';document.getElementById('lx').textContent='（监听中，等待声音...）';document.getElementById('lra').style.display='none';R=null;
+livePoll=setInterval(liveStatus,1000);}).catch(function(e){el('ld','');lb.disabled=false;se('网络错误:'+e.message)});}
+function liveStatus(){fetch('/api/live/status').then(function(r){return r.json()}).then(function(d){if(!d.running)return;var t=d.transcript||'';if(t)document.getElementById('lx').textContent=t;document.getElementById('lst').textContent='监听中 '+d.elapsed+' 秒';}).catch(function(){});}
+function liveStop(){el('ld','show');document.getElementById('ldt').textContent='正在收尾...';
+fetch('/api/live/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})}).then(function(r){return r.json()}).then(function(d){el('ld','');if(livePoll){clearInterval(livePoll);livePoll=null}liveRunning=false;var lb=document.getElementById('lb');lb.textContent='开始监听';lb.style.background='var(--accent)';document.getElementById('lst').textContent='已停止';
+if(d.ok&&d.transcript){R={title:'直播代听',text:d.transcript,words:d.words};document.getElementById('lx').textContent=d.transcript;document.getElementById('lra').style.display='flex';se('已停止，拿到 '+d.words+' 字文字稿')}else{se(d.error||'停止')}}).catch(function(e){el('ld','');se('网络错误:'+e.message)});}
+function liveOrganize(){if(!R)return;el('ld','show');document.getElementById('ldt').textContent='AI 整理中（DeepSeek）...';document.getElementById('pbf').style.width='0%';document.getElementById('pbt').textContent='';var tid='t'+Date.now();var poll=startPoll(tid);
+fetch('/api/organize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:R.title,text:R.text,task_id:tid})}).then(function(r){return r.json()}).then(function(d){clearInterval(poll);el('ld','');if(!d.ok){se(d.error||'整理失败');return}R.organized=d.text;document.getElementById('lx').textContent=d.text;se('已整理成笔记')}).catch(function(e){clearInterval(poll);el('ld','');se('网络错误:'+e.message)});}
+function liveSave(){if(!R)return;fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:R.title,text:R.organized||R.text})}).then(function(r){return r.json()}).then(function(d){if(d.ok){se('已存入: '+d.path)}else{se('保存失败: '+d.error)}}).catch(function(e){se('网络错误:'+e.message)});}
+function liveCopy(){if(!R)return;navigator.clipboard.writeText(R.text);se('已复制');setTimeout(function(){el('er','')},1500);}
 </script></body></html>
