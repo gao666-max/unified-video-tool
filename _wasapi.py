@@ -223,6 +223,7 @@ class LoopbackRecorder:
 
     # -- 公共 API -------------------------------------------------------
     def start(self):
+        ole32.CoInitialize(None)  # 确保当前线程已初始化 COM（多线程 HTTP server 下每个请求线程都要）
         d = _Device()
         try:
             dev = d.get_default_render_device()
