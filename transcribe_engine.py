@@ -95,21 +95,35 @@ def transcribe_whisper_segments(audio_path):
 
 SHERPA_PY = r'D:\live-class-skill\win\scripts\.venv\Scripts\python.exe'
 SHERPA_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sherpa_transcribe.py')
+FFMPEG = r'D:\ffmpeg\bin\ffmpeg.exe'
 
 
 def transcribe_sherpa(audio_path):
-    """sherpa-onnx 中文快速转写（子进程调 live-class-skill 的 GPU venv）。失败返回空串。"""
+    """sherpa-onnx 中文快速转写（子进程调 live-class-skill 的 GPU venv）。失败返回空串。
+    sherpa 的 soundfile 只认 wav/flac，m4a/aac 等先 ffmpeg 转 16k wav 再喂。"""
     if not os.path.exists(SHERPA_PY):
         return ''
+    import subprocess
+    wav = str(audio_path)
     try:
-        import subprocess
-        r = subprocess.run([SHERPA_PY, SHERPA_SCRIPT, str(audio_path)],
-                           capture_output=True, text=True, timeout=120, encoding='utf-8')
+        if not wav.lower().endswith('.wav'):
+            wav = wav + '.sherpa.wav'
+            subprocess.run([FFMPEG, '-y', '-i', str(audio_path), '-vn', '-acodec', 'pcm_s16le',
+                            '-ar', '16000', '-ac', '1', wav],
+                           capture_output=True, timeout=180)
+        r = subprocess.run([SHERPA_PY, SHERPA_SCRIPT, wav],
+                           capture_output=True, text=True, timeout=600, encoding='utf-8', errors='replace')
         if r.returncode == 0:
             return (r.stdout or '').strip()
         return ''
     except Exception:
         return ''
+    finally:
+        if wav != str(audio_path) and os.path.exists(wav):
+            try:
+                os.remove(wav)
+            except Exception:
+                pass
 
 
 FFPROBE = r'D:\ffmpeg\bin\ffprobe.exe'
@@ -121,7 +135,7 @@ def _audio_duration(audio_path):
         import subprocess
         r = subprocess.run([FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
                             '-of', 'default=noprint_wrappers=1:nokey=1', str(audio_path)],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, encoding='utf-8', errors='replace')
         return float((r.stdout or '').strip() or 0)
     except Exception:
         return 0

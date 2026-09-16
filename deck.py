@@ -80,7 +80,7 @@ def transcribe_segments(vf, wd):
 
 
 def _duration(vf):
-    r = subprocess.run([FFMPEG, '-i', str(vf)], capture_output=True, text=True)
+    r = subprocess.run([FFMPEG, '-i', str(vf)], capture_output=True, text=True, encoding='utf-8', errors='replace')
     m = re.search(r'Duration: (\d+):(\d+):(\d+\.?\d*)', r.stderr or '')
     if not m:
         return 0.0

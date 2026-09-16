@@ -45,13 +45,27 @@ def transcribe(audio_path):
         return ''
     import soundfile as sf
     audio, sr = sf.read(audio_path, dtype='float32', always_2d=True)
-    stream = recognizer.create_stream()
-    stream.accept_waveform(sr, audio[:, 0])
-    recognizer.decode_stream(stream)
-    return stream.result.text.strip()
+    # 分块转写：超长音频一次性 decode 会让 onnxruntime 请求巨额显存（17 分钟 → ~83GB）而崩溃，
+    # 按 20s 切片逐块 decode 后拼接，单块显存需求降到可承受范围。
+    chunk_samples = int(sr * 20)
+    mono = audio[:, 0]
+    n = mono.shape[0]
+    parts = []
+    for start in range(0, n, chunk_samples):
+        seg = mono[start:start + chunk_samples]
+        if seg.shape[0] < int(sr * 0.2):  # 空/超短尾块跳过
+            continue
+        stream = recognizer.create_stream()
+        stream.accept_waveform(sr, seg)
+        recognizer.decode_stream(stream)
+        t = stream.result.text.strip()
+        if t:
+            parts.append(t)
+    return ''.join(parts)
 
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         sys.exit(1)
+    sys.stdout.reconfigure(encoding='utf-8')
     print(transcribe(sys.argv[1]))

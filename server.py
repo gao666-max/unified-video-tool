@@ -110,11 +110,11 @@ def process_douyin(url, wd, progress_cb=None):
     # 2. OpenCLI 浏览器打开视频页，eval 拿标题/文案
     session = 'dy_' + str(int(time.time()))
     try:
-        subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',session,'open',video_url,'--window','background'],
+        subprocess.run([opencli_bin,'--profile','3samu7sw','browser',session,'open',video_url,'--window','background'],
             capture_output=True, text=True, timeout=40, env=env, encoding='utf-8', errors='replace')
         time.sleep(5)
         js = "JSON.stringify({t:document.title.replace(' - 抖音','').trim()||(document.querySelector('h1')||{}).textContent||'', d:(document.querySelector('meta[name=description]')||{}).content||(document.querySelector('h1')||{}).textContent||''})"
-        r = subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',session,'eval',js],
+        r = subprocess.run([opencli_bin,'--profile','3samu7sw','browser',session,'eval',js],
             capture_output=True, text=True, timeout=30, env=env, encoding='utf-8', errors='replace')
         # eval 输出带 node 警告前缀，取最后一行非空 JSON
         lines = [l for l in r.stdout.splitlines() if l.strip().startswith('{')]
@@ -129,8 +129,8 @@ def process_douyin(url, wd, progress_cb=None):
         log_line('douyin-browser-err ' + str(e)[:100])
     finally:
         try:
-            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',session,'close'],
-                capture_output=True, text=True, timeout=15, env=env)
+            subprocess.run([opencli_bin,'--profile','3samu7sw','browser',session,'close'],
+                capture_output=True, text=True, timeout=15, env=env, encoding='utf-8', errors='replace')
         except Exception:
             pass
 
@@ -147,14 +147,14 @@ def process_douyin(url, wd, progress_cb=None):
         # 若先 open 再监听会整批错过，导致抓不到 douyinvod 地址，视频只能退回标题文案
         with open(net_file, 'w', encoding='utf-8') as nf:
             net_proc = subprocess.Popen(
-                [opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'network','--follow','--all'],
+                [opencli_bin,'--profile','3samu7sw','browser',dl_session,'network','--follow','--all'],
                 stdout=nf, stderr=subprocess.DEVNULL, text=True, env=env, encoding='utf-8', errors='replace')
             time.sleep(1)
-            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'open',video_url,'--window','background'],
+            subprocess.run([opencli_bin,'--profile','3samu7sw','browser',dl_session,'open',video_url,'--window','background'],
                 capture_output=True, text=True, timeout=40, env=env, encoding='utf-8', errors='replace')
             time.sleep(6)
             # 触发播放，确保音频/视频流请求发出（不用 location.reload，会搞挂 --follow 监听）
-            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'eval',
+            subprocess.run([opencli_bin,'--profile','3samu7sw','browser',dl_session,'eval',
                 '(function(){var v=document.querySelector("video");if(v){v.muted=true;v.play();}return !!v;})()'],
                 capture_output=True, text=True, timeout=20, env=env, encoding='utf-8', errors='replace')
             time.sleep(8)
@@ -210,8 +210,8 @@ def process_douyin(url, wd, progress_cb=None):
         log_line('douyin-dl-err ' + str(e)[:100])
     finally:
         try:
-            subprocess.run([opencli_bin,'--profile','yaaqs4cg','browser',dl_session,'close'],
-                capture_output=True, text=True, timeout=15, env=env)
+            subprocess.run([opencli_bin,'--profile','3samu7sw','browser',dl_session,'close'],
+                capture_output=True, text=True, timeout=15, env=env, encoding='utf-8', errors='replace')
         except Exception:
             pass
 
@@ -221,7 +221,7 @@ def process_douyin(url, wd, progress_cb=None):
         f"标题:{title}\n作者:{author}\n来源:{url}\n平台:douyin\n\n--- 文案 ---\n\n{body}",
         encoding='utf-8')
     return {'ok': True, 'title': title or '抖音视频', 'platform': 'douyin',
-            'text': body[:8000], 'words': len(body.replace('\n','').replace(' ','')), 'dir': str(wd)}
+            'text': body, 'words': len(body.replace('\n','').replace(' ','')), 'dir': str(wd)}
 
 def transcribe_video(vf, wd, use_sherpa=False, progress_cb=None):
     """ffmpeg 抽音频 -> 本地转写（GPU优先/CPU兜底，模型复用）-> 简体中文。失败返回空串。"""
@@ -297,7 +297,7 @@ def process_xiaohongshu(url, wd, progress_cb=None):
     视频缺失或转写失败时退化为返回正文文案。"""
     env = os.environ.copy()
     env.setdefault('HTTP_PROXY', PROXY); env.setdefault('HTTPS_PROXY', PROXY)
-    env.setdefault('OPENCLI_PROFILE', 'yaaqs4cg')
+    env.setdefault('OPENCLI_PROFILE', '3samu7sw')
     opencli_bin = r'C:\Users\TX\AppData\Roaming\npm\opencli.cmd'
 
     title, author, caption = '', '', ''
@@ -366,7 +366,7 @@ def process_xiaohongshu(url, wd, progress_cb=None):
         f"标题:{display_title}\n作者:{author}\n来源:{url}\n平台:xiaohongshu\n\n--- 文案 ---\n\n{transcript}",
         encoding='utf-8')
     return {'ok': True, 'title': display_title, 'platform': 'xiaohongshu',
-            'text': transcript[:8000], 'words': len(transcript.replace('\n','').replace(' ','')), 'dir': str(wd)}
+            'text': transcript, 'words': len(transcript.replace('\n','').replace(' ','')), 'dir': str(wd)}
 
 def process_other(url, wd, platform, progress_cb=None):
     if '://' not in url or not urllib.parse.urlparse(url).netloc:
@@ -408,7 +408,7 @@ def process_other(url, wd, platform, progress_cb=None):
 
     (wd/'transcript.txt').write_text(f"标题:{wd.name}\n来源:{url}\n\n---\n{text}", encoding='utf-8')
     return {'ok': True, 'title': wd.name, 'platform': platform,
-            'text': text[:8000], 'words': len(text.replace('\n','').replace(' ','')), 'dir': str(wd)}
+            'text': text, 'words': len(text.replace('\n','').replace(' ','')), 'dir': str(wd)}
 
 def _extract_url(text):
     m = re.search(r'https?://[^\s<>"\']+', text or '')
@@ -540,7 +540,7 @@ def handle_record(data):
     _set_progress(task_id, '完成', 100, '完成')
     (wd / 'transcript.txt').write_text(text, encoding='utf-8')
     return {'ok': True, 'title': '内录转写', 'platform': 'loopback',
-            'text': text[:8000], 'words': len(text.replace('\n','').replace(' ','')), 'dir': str(wd)}
+            'text': text, 'words': len(text.replace('\n','').replace(' ','')), 'dir': str(wd)}
 
 # ---------------- 直播代听（持续监听） ----------------
 _LIVE = None
