@@ -89,6 +89,32 @@ flowchart TB
 | 皮肤 Token 化 | 改外观不改代码 | 需维护 token 规范 |
 | 关键帧灰度签名去重 | 简单、快、够用 | 对相似但不同的画面可能误去重 |
 
+## 📸 界面预览
+
+**抖音视频提取** — 粘贴链接，一键提取文案
+
+![抖音视频提取界面](screenshots/01-extract.png)
+
+**录音解析** — 内录转写，系统能出声的都能转
+
+![录音解析界面](screenshots/02-record-transcribe.png)
+
+**录音 AI 整理** — 转录文本 → 结构化笔记
+
+![录音 AI 整理界面](screenshots/03-record-organize.png)
+
+**AI 整理后存到本地** — 整理结果落到本地
+
+![AI 整理后存到本地界面](screenshots/04-organized-save-local.png)
+
+**笔记自动保存到本地** — 整理后的笔记自动入库
+
+![笔记自动保存到本地](screenshots/05-notes-auto-save.png)
+
+**整理后生图** — 笔记文本 → 小红书图文卡片
+
+![整理后生图界面](screenshots/06-organize-gen-image.png)
+
 ## 🚀 快速开始
 
 ```bash
